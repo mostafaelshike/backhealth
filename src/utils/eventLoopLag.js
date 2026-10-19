@@ -3,35 +3,66 @@ const { monitorEventLoopDelay } = require('perf_hooks');
 class EventLoopHealthMonitor {
   constructor(resolution = 20, maxLagThresholdMs = 50) {
     this.maxLagThresholdMs = maxLagThresholdMs;
+    this.serverless = process.env.VERCEL === '1';
+
+    if (this.serverless) {
+      this.histogram = null;
+      return;
+    }
+
     try {
       this.histogram = monitorEventLoopDelay({ resolution });
       this.histogram.enable();
-      this.enabled = true;
-    } catch (e) {
-      this.enabled = false;
+    } catch (error) {
+      this.histogram = null;
     }
   }
 
   getMetrics() {
-    if (!this.enabled) {
+    if (this.serverless) {
+      return {
+        status: 'unavailable',
+        reason: 'serverless_runtime',
+      };
+    }
+
+    if (!this.histogram) {
       return { status: 'unsupported' };
     }
 
-    const min = (this.histogram.min / 1e6).toFixed(2);
-    const mean = (this.histogram.mean / 1e6).toFixed(2);
-    const p50 = (this.histogram.percentile(50) / 1e6).toFixed(2);
-    const p95 = (this.histogram.percentile(95) / 1e6).toFixed(2);
-    const p99 = (this.histogram.percentile(99) / 1e6).toFixed(2);
-    const max = (this.histogram.max / 1e6).toFixed(2);
+    const sampleCount = this.histogram.count;
+    if (sampleCount < 5) {
+      this.histogram.reset();
+      return {
+        status: 'insufficient_samples',
+        sampleCount,
+      };
+    }
+
+    const toMilliseconds = (nanoseconds) => nanoseconds / 1e6;
+    const metrics = {
+      minMs: toMilliseconds(this.histogram.min),
+      meanMs: toMilliseconds(this.histogram.mean),
+      p50Ms: toMilliseconds(this.histogram.percentile(50)),
+      p95Ms: toMilliseconds(this.histogram.percentile(95)),
+      p99Ms: toMilliseconds(this.histogram.percentile(99)),
+      maxMs: toMilliseconds(this.histogram.max),
+      sampleCount,
+    };
+
+    this.histogram.reset();
+
+    if (Object.values(metrics).some((value) => !Number.isFinite(value))) {
+      return {
+        status: 'insufficient_samples',
+        sampleCount,
+      };
+    }
 
     return {
-      minMs: parseFloat(min),
-      meanMs: parseFloat(mean),
-      p50Ms: parseFloat(p50),
-      p95Ms: parseFloat(p95),
-      p99Ms: parseFloat(p99),
-      maxMs: parseFloat(max),
-      isHealthy: parseFloat(p99) < this.maxLagThresholdMs,
+      status: 'available',
+      ...metrics,
+      isHealthy: metrics.p99Ms < this.maxLagThresholdMs,
     };
   }
 }

@@ -28,22 +28,52 @@ const uploadRoutes = require('./routes/uploadRoutes');
 
 const app = express();
 
-// Reuse one connection attempt while it is in progress.
-let dbConnectionPromise = null;
-
-const ensureDBConnection = async () => {
-  if (mongoose.connection.readyState === 1) {
-    return;
+const checkDatabase = async () => {
+  try {
+    await connectDB();
+  } catch (error) {
+    return {
+      ready: false,
+      status: 'disconnected',
+    };
   }
 
-  if (!dbConnectionPromise) {
-    dbConnectionPromise = connectDB().catch((error) => {
-      dbConnectionPromise = null;
-      throw error;
-    });
+  if (mongoose.connection.readyState !== 1 || !mongoose.connection.db) {
+    return {
+      ready: false,
+      status: 'disconnected',
+    };
   }
 
-  await dbConnectionPromise;
+  let timeout;
+  try {
+    await Promise.race([
+      mongoose.connection.db.command(
+        { ping: 1 },
+        { maxTimeMS: 1000, serverSelectionTimeoutMS: 1500 }
+      ),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => {
+          const error = new Error('Database health check timed out');
+          error.name = 'HealthCheckTimeoutError';
+          reject(error);
+        }, 2000);
+      }),
+    ]);
+
+    return {
+      ready: true,
+      status: 'connected',
+    };
+  } catch (error) {
+    connectDB.logDatabaseFailure('Health check', error);
+    return {
+      ready: false,
+      status: 'unavailable',
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 };
 
 app.use(
@@ -87,21 +117,21 @@ if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
 
-// Health endpoint: reports the real database state.
-app.get('/api/health', (req, res) => {
+// Health reports function availability separately from MongoDB readiness.
+app.get('/api/health', async (req, res) => {
   const mem = process.memoryUsage();
-  const dbReady = mongoose.connection.readyState === 1;
+  const database = await checkDatabase();
   const lagMetrics = eventLoopMonitor.getMetrics();
 
-  res.status(dbReady ? 200 : 503).json({
-    status: dbReady ? 'healthy' : 'unavailable',
-    message: dbReady
+  res.status(database.ready ? 200 : 503).json({
+    status: database.ready ? 'healthy' : 'unhealthy',
+    message: database.ready
       ? 'Medical Market API is running'
-      : 'Database is not connected',
+      : 'Database connection is unavailable',
     timestamp: new Date().toISOString(),
     uptimeSeconds: Math.floor(process.uptime()),
     database: {
-      status: dbReady ? 'connected' : 'disconnected',
+      status: database.status,
     },
     eventLoopLag: lagMetrics,
     memory: {
@@ -116,12 +146,11 @@ app.get('/healthz/liveness', (req, res) => {
   res.status(200).send('OK');
 });
 
-app.get('/healthz/readiness', (req, res) => {
-  const dbReady = mongoose.connection.readyState === 1;
-
+app.get('/healthz/readiness', async (req, res) => {
+  const database = await checkDatabase();
   return res
-    .status(dbReady ? 200 : 503)
-    .send(dbReady ? 'READY' : 'DATABASE_NOT_READY');
+    .status(database.ready ? 200 : 503)
+    .send(database.ready ? 'READY' : 'DATABASE_NOT_READY');
 });
 
 app.get('/', (req, res) => {
@@ -136,13 +165,12 @@ app.get('/', (req, res) => {
 // Ensure the database is connected before processing API requests.
 app.use('/api', async (req, res, next) => {
   try {
-    await ensureDBConnection();
+    await connectDB();
     next();
   } catch (error) {
-    console.error('[Database Connection Error]:', error.message);
-
     res.status(503).json({
       success: false,
+      code: 'DATABASE_UNAVAILABLE',
       message: 'Database temporarily unavailable',
     });
   }

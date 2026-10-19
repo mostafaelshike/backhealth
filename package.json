@@ -8,6 +8,7 @@
     "dev": "nodemon src/server.js",
     "seed": "node src/seeder/seed.js",
     "seed:destroy": "node src/seeder/seed.js -d",
+    "test:database": "node --test tests/database.test.js",
     "test:enterprise": "node tests/enterprise.test.js",
     "loadtest": "node production-load-test.js"
   },

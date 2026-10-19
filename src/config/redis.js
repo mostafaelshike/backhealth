@@ -90,19 +90,21 @@ class InMemoryRedisFallback {
 const initializeRedis = () => {
   const redisUrl = process.env.REDIS_URL || (process.env.REDIS_HOST ? `redis://${process.env.REDIS_HOST}:${process.env.REDIS_PORT || 6379}` : null);
 
-  if (!redisUrl && process.env.NODE_ENV !== 'production') {
+  if (!redisUrl) {
     redisClient = new InMemoryRedisFallback();
+    console.warn(
+      '[Redis] Redis is not configured; using an instance-local fallback (rate limits are not shared across instances).'
+    );
     return redisClient;
   }
 
   try {
-    const targetUrl = redisUrl || 'redis://127.0.0.1:6379';
-    redisClient = new Redis(targetUrl, {
+    redisClient = new Redis(redisUrl, {
       maxRetriesPerRequest: 1,
       connectTimeout: 2000,
       retryStrategy(times) {
         if (times > 2) {
-          console.warn('[Redis] Max reconnect attempts reached. Switching to InMemory fallback.');
+          console.warn('[Redis] Reconnect limit reached. Switching to in-memory fallback.');
           return null; // Stop retrying
         }
         return 500;
@@ -112,11 +114,12 @@ const initializeRedis = () => {
 
     redisClient.on('connect', () => {
       isRedisConnected = true;
-      console.log(`[Redis Connected] Primary node active at: ${targetUrl}`);
+      console.log('[Redis] Connection established');
     });
 
     redisClient.on('error', (err) => {
-      console.warn(`[Redis Connection Warning]: ${err.message}. Ensuring system stability with fallback cache.`);
+      const errorName = /^[A-Za-z0-9]+$/.test(err?.name || '') ? err.name : 'Error';
+      console.warn(`[Redis] Connection warning (type=${errorName})`);
       if (!isRedisConnected) {
         redisClient = new InMemoryRedisFallback();
       }
@@ -124,7 +127,8 @@ const initializeRedis = () => {
 
     return redisClient;
   } catch (error) {
-    console.warn(`[Redis Init Error]: ${error.message}. Using fallback adapter.`);
+    const errorName = /^[A-Za-z0-9]+$/.test(error?.name || '') ? error.name : 'Error';
+    console.warn(`[Redis] Initialization failed (type=${errorName}); using in-memory fallback.`);
     redisClient = new InMemoryRedisFallback();
     return redisClient;
   }

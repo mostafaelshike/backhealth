@@ -1,12 +1,7 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 const app = require('./app');
-const connectDB = require('./config/db');
-const { initializeRedis, getRedisClient } = require('./config/redis');
-
-// Initialize Storage & Caching Subsystems
-connectDB();
-initializeRedis();
+const { getRedisClient } = require('./config/redis');
 
 const PORT = process.env.PORT || 5000;
 

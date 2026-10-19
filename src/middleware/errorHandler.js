@@ -1,6 +1,16 @@
+const connectDB = require('../config/db');
+
 const errorHandler = (err, req, res, next) => {
-  let error = { ...err };
-  error.message = err.message;
+  if (connectDB.isDatabaseUnavailableError(err)) {
+    console.error(
+      `[Database] Request failed (category=${connectDB.classifyConnectionError(err)})`
+    );
+    return res.status(503).json({
+      success: false,
+      code: 'DATABASE_UNAVAILABLE',
+      message: 'Database temporarily unavailable',
+    });
+  }
 
   // Log error for development
   if (process.env.NODE_ENV === 'development') {
@@ -42,7 +52,7 @@ const errorHandler = (err, req, res, next) => {
   const statusCode = res.statusCode && res.statusCode !== 200 ? res.statusCode : 500;
   res.status(statusCode).json({
     success: false,
-    message: error.message || 'حدث خطأ غير متوقع في الخادم',
+    message: err.message || 'حدث خطأ غير متوقع في الخادم',
     stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
   });
 };

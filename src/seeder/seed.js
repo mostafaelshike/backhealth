@@ -1,5 +1,5 @@
 require('dotenv').config({ path: __dirname + '/../../.env' });
-const mongoose = require('mongoose');
+const connectDB = require('../config/db');
 const User = require('../models/User');
 const Category = require('../models/Category');
 const Brand = require('../models/Brand');
@@ -10,9 +10,8 @@ const { users, categories, brands, sampleProducts } = require('./seedData');
 
 const importData = async () => {
   try {
-    const mongoUri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/medical_market_db';
-    console.log(`Connecting to MongoDB at: ${mongoUri}...`);
-    await mongoose.connect(mongoUri);
+    console.log('Connecting to MongoDB...');
+    await connectDB();
 
     console.log('Clearing old data...');
     await User.deleteMany();
@@ -171,7 +170,7 @@ const importData = async () => {
 
 const destroyData = async () => {
   try {
-    await mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/medical_market_db');
+    await connectDB();
     await User.deleteMany();
     await Category.deleteMany();
     await Brand.deleteMany();
