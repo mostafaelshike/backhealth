@@ -38,8 +38,17 @@ const classifyConnectionError = (error) => {
 };
 
 const logDatabaseFailure = (context, error) => {
+  const category = classifyConnectionError(error);
+  const name = typeof error?.name === 'string' ? error.name : 'UnknownError';
+  const code = error?.code !== undefined ? error.code : '-';
+  // Strip credentials from any mongodb+srv:// or mongodb:// URIs in the message
+  const rawMessage = typeof error?.message === 'string' ? error.message : '';
+  const sanitizedMessage = rawMessage.replace(
+    /mongodb(\+srv)?:\/\/[^@]*@/gi,
+    'mongodb$1://***@'
+  );
   console.error(
-    `[MongoDB] ${context} failed (category=${classifyConnectionError(error)})`
+    `[MongoDB] ${context} failed | category=${category} | name=${name} | code=${code} | ${sanitizedMessage}`
   );
 };
 
