@@ -1,15 +1,27 @@
+
 const mongoose = require('mongoose');
 
 const connectDB = async () => {
+  const mongoUri = process.env.MONGO_URI;
+
+  if (!mongoUri) {
+    throw new Error('MONGO_URI is missing from environment variables');
+  }
+
   try {
-    const conn = await mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/medical_market_db', {
-      serverSelectionTimeoutMS: 5000,
+    const conn = await mongoose.connect(mongoUri, {
+      serverSelectionTimeoutMS: 10000,
+      connectTimeoutMS: 10000,
     });
-    console.log(`[MongoDB Connected] Host: ${conn.connection.host}, Database: ${conn.connection.name}`);
+
+    console.log(
+      `[MongoDB Connected] Host: ${conn.connection.host}, Database: ${conn.connection.name}`
+    );
+
+    return conn;
   } catch (error) {
-    console.error(`[MongoDB Connection Error]: ${error.message}`);
-    console.warn(`[Note]: Make sure MongoDB is installed and running locally, or update MONGO_URI in .env to a remote MongoDB Atlas connection string.`);
-    // Do not terminate process immediately to allow app to inform frontend gracefully
+    console.error('[MongoDB Connection Error]:', error.message);
+    throw error;
   }
 };
 

@@ -1,13 +1,15 @@
+
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const compression = require('compression');
 const mongoose = require('mongoose');
+
+const connectDB = require('./config/db');
 const errorHandler = require('./middleware/errorHandler');
 const eventLoopMonitor = require('./utils/eventLoopLag');
 const { publicApiLimiter } = require('./middleware/rateLimiter');
-const { getRedisClient } = require('./config/redis');
 
 // Route files
 const authRoutes = require('./routes/authRoutes');
@@ -26,29 +28,58 @@ const uploadRoutes = require('./routes/uploadRoutes');
 
 const app = express();
 
-// 1. Enterprise Security Headers via Helmet
+// Reuse one connection attempt while it is in progress.
+let dbConnectionPromise = null;
+
+const ensureDBConnection = async () => {
+  if (mongoose.connection.readyState === 1) {
+    return;
+  }
+
+  if (!dbConnectionPromise) {
+    dbConnectionPromise = connectDB().catch((error) => {
+      dbConnectionPromise = null;
+      throw error;
+    });
+  }
+
+  await dbConnectionPromise;
+};
+
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: 'cross-origin' },
-    contentSecurityPolicy: false, // Permit frontend assets
-    hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
+    contentSecurityPolicy: false,
+    hsts: {
+      maxAge: 31536000,
+      includeSubDomains: true,
+      preload: true,
+    },
   })
 );
 
-// 2. Performance & Compression
 app.use(compression());
 
-// 3. CORS Configuration
 app.use(
   cors({
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Idempotency-Key', 'x-idempotency-key'],
-    exposedHeaders: ['X-RateLimit-Limit', 'X-RateLimit-Remaining', 'Retry-After', 'X-Cache-Lookup'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-Requested-With',
+      'Idempotency-Key',
+      'x-idempotency-key',
+    ],
+    exposedHeaders: [
+      'X-RateLimit-Limit',
+      'X-RateLimit-Remaining',
+      'Retry-After',
+      'X-Cache-Lookup',
+    ],
   })
 );
 
-// 4. Strict Payload Limits to Prevent Memory Exhaustion / Buffer Overflow
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
@@ -56,21 +87,22 @@ if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
 
-// 5. Apply Global Sliding-Window Rate Limiting
-app.use('/api', publicApiLimiter);
-
-// 6. Enterprise Health Check & Cluster Diagnostics
+// Health endpoint: reports the real database state.
 app.get('/api/health', (req, res) => {
   const mem = process.memoryUsage();
-  const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+  const dbReady = mongoose.connection.readyState === 1;
   const lagMetrics = eventLoopMonitor.getMetrics();
 
-  res.status(200).json({
-    status: 'healthy',
-    message: 'سوق طبي API يعمل بكفاءة وتوافق عالي (Medical Market API is running smoothly)',
+  res.status(dbReady ? 200 : 503).json({
+    status: dbReady ? 'healthy' : 'unavailable',
+    message: dbReady
+      ? 'Medical Market API is running'
+      : 'Database is not connected',
     timestamp: new Date().toISOString(),
     uptimeSeconds: Math.floor(process.uptime()),
-    database: { status: dbStatus },
+    database: {
+      status: dbReady ? 'connected' : 'disconnected',
+    },
     eventLoopLag: lagMetrics,
     memory: {
       rssMb: (mem.rss / 1024 / 1024).toFixed(2),
@@ -80,29 +112,46 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Liveness & Readiness Probes (K8s / ALB)
 app.get('/healthz/liveness', (req, res) => {
   res.status(200).send('OK');
 });
 
 app.get('/healthz/readiness', (req, res) => {
   const dbReady = mongoose.connection.readyState === 1;
-  if (dbReady) {
-    return res.status(200).send('READY');
-  }
-  return res.status(503).send('DATABASE_NOT_READY');
+
+  return res
+    .status(dbReady ? 200 : 503)
+    .send(dbReady ? 'READY' : 'DATABASE_NOT_READY');
 });
 
 app.get('/', (req, res) => {
   res.status(200).json({
-    name: 'سوق طبي - Medical Market Backend API (Enterprise Edition)',
+    name: 'سوق طبي - Medical Market Backend API',
     version: '2.0.0',
-    architecture: 'Stateless, Multi-Layer Cached, Saga-Enabled, Concurrency-Safe',
+    architecture: 'Express + MongoDB',
     health: '/api/health',
   });
 });
 
-// 7. Mount Application Routes
+// Ensure the database is connected before processing API requests.
+app.use('/api', async (req, res, next) => {
+  try {
+    await ensureDBConnection();
+    next();
+  } catch (error) {
+    console.error('[Database Connection Error]:', error.message);
+
+    res.status(503).json({
+      success: false,
+      message: 'Database temporarily unavailable',
+    });
+  }
+});
+
+// Apply rate limiting to API routes.
+app.use('/api', publicApiLimiter);
+
+// Application routes
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/categories', categoryRoutes);
@@ -118,7 +167,7 @@ app.use('/api/settings', settingRoutes);
 app.use('/api/upload', uploadRoutes);
 
 // Catch 404
-app.use((req, res, next) => {
+app.use((req, res) => {
   res.status(404).json({
     success: false,
     message: `المسار المطلوب غير موجود: ${req.originalUrl}`,
