@@ -138,6 +138,16 @@ test('health checks ping MongoDB, while API routes fail with 503 when it is unav
   }));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
 
+  const home = await fetch(`${baseUrl}/`);
+  assert.equal(home.status, 200);
+  assert.match(home.headers.get('content-type'), /^text\/html; charset=utf-8$/);
+  const homeHtml = await home.text();
+  assert.match(homeHtml, /<html lang="ar" dir="rtl">/);
+  assert.match(homeHtml, /سوق طبي يعمل بنجاح/);
+  assert.match(homeHtml, /تم تشغيل خادم واجهة برمجة التطبيقات بنجاح/);
+  assert.match(homeHtml, /حالة السيرفر: يعمل/);
+  assert.match(homeHtml, /href="\/api\/health"/);
+
   const firstHealth = await fetch(`${baseUrl}/api/health`);
   assert.equal(firstHealth.status, 200);
   const firstHealthBody = await firstHealth.json();
